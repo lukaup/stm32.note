@@ -1,0 +1,116 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>7-1~7-2_ADC 原理与采集</title>
+<link rel="stylesheet" href="style.css"></head><body>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+<h1>[7-1~7-2] ADC 原理与采集</h1>
+<p>课程时长：约 70 分钟（两节）　|　深度版　|　配套结构图与看图理解</p>
+<h2>本节定位</h2>
+<p>7-1 讲原理：ADC 怎么把连续电压切成 4096 份；7-2 是实战：单通道轮询、多通道扫描 + DMA。</p>
+<p>这是“把模拟世界读进芯片”的唯一通道。传感器分压、电流采样、电池电压检测，最终都落到这里。</p>
+<h2>学完你应该能做到</h2>
+<p>说清 12 位 ADC 的量化过程与换算公式</p>
+<p>解释采样时间为什么影响精度</p>
+<p>配置单通道与多通道采集</p>
+<p>知道什么时候必须上 DMA</p>
+<h2>结构图</h2>
+<img src="img/15_7_1_7_2_ADC_原理与采集_1.png" alt="figure">
+<p>图 14　ADC 内部结构：模拟输入 → 多路选择 → 采样保持 → 逐次逼近 → 数据寄存器</p>
+<h3>看图理解</h3>
+<p>左侧是信号通路：引脚电压经多路选择进入采样保持电容，再由逐次逼近电路比较 12 次，结果写进数据寄存器。</p>
+<p>图里两个关键提示：Vref 决定量程（3.3V 时每级约 0.8mV），采样时间决定电容能不能充到真实电压。很多“读数偏低”的问题，根源在后者。</p>
+<h2>核心知识点</h2>
+<h3>1. ADC 在芯片里的位置</h3>
+<p>STM32F103 的 ADC 是 12 位逐次逼近型，最多 18 个通道，支持规则组（常规扫描）与注入组（插队采集），可由软件、定时器或外部信号触发。</p>
+<p>转换结果放在 DR 寄存器，12 位右对齐或左对齐可选；多通道时每次转换完要读走，否则会被下一次覆盖。</p>
+<table><tr><th>概念</th><th>含义</th><th>注意</th></tr><tr><td>分辨率</td><td>12 位 = 4096 级</td><td>LSB ≈ Vref/4096</td></tr><tr><td>规则组</td><td>常规扫描序列</td><td>可多个通道轮流</td></tr><tr><td>注入组</td><td>插队采集</td><td>最多 4 通道</td></tr><tr><td>触发源</td><td>软件/定时器/EXTI</td><td>定时器触发最稳</td></tr></table>
+<h3>2. 换算与精度</h3>
+<p>读数 = Vin ÷ Vref × 4096；反推电压 = 读数 × Vref ÷ 4096。3.3V 参考下，1 个 LSB ≈ 0.806mV。</p>
+<p>12 位是“分辨率”不是“精度”：参考电压误差、噪声、采样时间不足都会让有效位数下降，实际可能只有 10 位。</p>
+<pre>
+uint16_t raw = ADC_GetConversionValue(ADC1);
+float volt = raw * 3.3f / 4096.0f;   /* 12 位 */
+</pre>
+<h3>3. 采样时间与输入阻抗</h3>
+<p>采样阶段，内部电容要在规定时间内充到输入电压。信号源内阻越大，充电越慢，采样时间不够就会读偏低。</p>
+<p>经验：源阻抗几十 kΩ 时，采样时间至少几十个周期；上百 kΩ 就要加运放缓冲。</p>
+<table><tr><th>源阻抗</th><th>建议采样时间</th><th>现象</th></tr><tr><td>&lt; 10kΩ</td><td>1.5–7.5 周期</td><td>正常</td></tr><tr><td>10–50kΩ</td><td>55.5 周期</td><td>偏短会跳</td></tr><tr><td>&gt; 100kΩ</td><td>239.5 周期或加缓冲</td><td>明显偏低</td></tr></table>
+<h3>4. 单通道与多通道</h3>
+<p>单通道：软件触发，轮询 EOC 标志，读 DR。简单，适合慢变量。</p>
+<p>多通道：规则组扫描，每转换完一个就 DMA 搬走；否则通道之间会“抢”同一个 DR，数据错位。</p>
+<pre>
+/* 单通道轮询 */
+ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 1, ADC_SampleTime_55Cycles5);
+ADC_SoftwareStartConvCmd(ADC1, ENABLE);
+while (!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC));
+uint16_t v = ADC_GetConversionValue(ADC1);
+</pre>
+<h3>5. 多通道 + DMA 的关键配置</h3>
+<pre>
+ADC_InitTypeDef a;
+a.ADC_Mode = ADC_Mode_Independent;
+a.ADC_ScanConvMode = ENABLE;          /* 扫描 */
+a.ADC_ContinuousConvMode = ENABLE;    /* 连续 */
+a.ADC_NbrOfChannel = 2;
+ADC_Init(ADC1, &amp;a);
+ADC_RegularChannelConfig(ADC1, ADC_Channel_0, 1, ADC_SampleTime_55Cycles5);
+ADC_RegularChannelConfig(ADC1, ADC_Channel_1, 2, ADC_SampleTime_55Cycles5);
+ADC_DMACmd(ADC1, ENABLE);
+ADC_Cmd(ADC1, ENABLE);
+</pre>
+<h3>6. 滤波与校准</h3>
+<p>滑动平均：平滑但滞后，适合温度、光照</p>
+<p>中值滤波：专治偶发尖刺</p>
+<p>一阶低通：y += α(x−y)，α 越小越平滑</p>
+<p>上电做一次偏移校准，减少零点误差</p>
+<h2>原理推导：为什么这样设计</h2>
+<p>为什么需要采样保持：逐次逼近要比较 12 次，期间输入电压若变化，比较结果就乱。采样电容把电压“冻住”，保证 12 次比较针对同一个值。</p>
+<p>为什么多通道不用 DMA 会串数据：所有通道共用一个 DR，转换完一个通道若不及时读走，下一个通道的结果会覆盖它。DMA 的作用就是“每次转换完立刻搬走”。</p>
+<h2>数值例题</h2>
+<p>例 1：3.3V 参考、读数 2048 → 电压 = 2048×3.3/4096 = 1.65V。</p>
+<p>例 2：读数 1 个 LSB 对应 3.3/4096 ≈ 0.806mV；要测 1mV 的变化，至少要有 2 个 LSB 的余量。</p>
+<p>例 3：采样 55.5 周期、ADC 时钟 12MHz → 单次采样约 4.6µs，加上转换 12.5 周期，整体约 5.6µs，最高约 180ksps。</p>
+<h2>错误写法对照</h2>
+<table><tr><th>错误写法</th><th>后果</th><th>正确做法</th></tr><tr><td>引脚配成上拉输入</td><td>分压比被改变，读数偏大</td><td>改 GPIO_Mode_AIN</td></tr><tr><td>多通道不配 DMA</td><td>通道数据错位</td><td>开扫描 + DMA</td></tr><tr><td>采样时间设最短</td><td>高阻信号读偏低</td><td>加长采样时间</td></tr><tr><td>参考电压不稳</td><td>整体漂移</td><td>用外部基准或稳压</td></tr></table>
+<h2>深入理解：两个“为什么”</h2>
+<p>分辨率与精度的区别：分辨率是“能分出多少格”，精度是“每格准不准”。12 位 ADC 若参考电压有 1% 误差，绝对精度就只有约 33mV。</p>
+<p>为什么要做过采样：对同一信号快速采样 N 次求平均，可把噪声摊薄，等效提高 1–2 位有效分辨率，代价是速度。</p>
+<h2>怎么验证你配对了</h2>
+<p>用电位器分压，转动时看读数是否线性变化</p>
+<p>万用表量同一点电压，与换算结果对比</p>
+<p>多通道采集时确认两个缓冲区数据不串</p>
+<h2>易错点与排查</h2>
+<table><tr><th>现象</th><th>原因</th><th>解决</th></tr><tr><td>读数一直是 4095</td><td>输入超过 Vref</td><td>分压或降幅</td></tr><tr><td>读数乱跳</td><td>采样时间不足/地噪声</td><td>加长采样、加滤波</td></tr><tr><td>多通道错位</td><td>没开 DMA</td><td>扫描 + DMA</td></tr><tr><td>整体偏小</td><td>源阻抗太大</td><td>加运放缓冲</td></tr></table>
+<h2>面试追问</h2>
+<p>Q1. 12 位 ADC 有多少级？</p>
+<p>A：4096。</p>
+<p>Q2. 电压怎么换算？</p>
+<p>A：读数 × Vref ÷ 4096。</p>
+<p>Q3. 采样时间为什么重要？</p>
+<p>A：决定采样电容能否充到真实电压。</p>
+<p>Q4. 规则组与注入组的区别？</p>
+<p>A：常规扫描 vs 插队采集。</p>
+<p>Q5. 多通道为什么要 DMA？</p>
+<p>A：避免共用 DR 导致数据覆盖。</p>
+<p>Q6. 分辨率等于精度吗？</p>
+<p>A：不等于，精度还受参考源与噪声影响。</p>
+<p>Q7. 如何提高有效精度？</p>
+<p>A：过采样平均、加滤波、稳定基准。</p>
+<p>Q8. ADC 时钟有上限吗？</p>
+<p>A：有，F103 通常不超过 14MHz。</p>
+<h2>自测题（先盖住答案）</h2>
+<p>1. 读数 1024、Vref 3.3V，电压？</p>
+<p>答：约 0.825V。</p>
+<p>2. 1 个 LSB 约多少 mV？</p>
+<p>答：0.806mV。</p>
+<p>3. 多通道必须配什么？</p>
+<p>答：DMA。</p>
+<p>4. 读数偏低常见原因？</p>
+<p>答：采样时间不足或源阻抗大。</p>
+<h2>复习清单</h2>
+<p>☐  会换算电压</p>
+<p>☐  懂采样时间</p>
+<p>☐  能配单/多通道</p>
+<p>☐  知道何时上 DMA</p>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+</body></html>

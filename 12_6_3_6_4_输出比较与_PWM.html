@@ -1,0 +1,108 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6-3~6-4_输出比较与 PWM</title>
+<link rel="stylesheet" href="style.css"></head><body>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+<h1>[6-3~6-4] 输出比较与 PWM</h1>
+<p>课程时长：约 75 分钟（两节）　|　深度版　|　配套结构图与看图理解</p>
+<h2>本节定位</h2>
+<p>6-3 讲原理：CNT 与 CCR 相等时，硬件按设定模式改变引脚电平；6-4 是它的实战：用 PWM 驱动 LED 呼吸灯、舵机、直流电机。</p>
+<p>这一节把“定时器只会定时”的印象彻底改掉——它还能输出精确的方波，而方波是所有“模拟量控制”的基础。</p>
+<h2>学完你应该能做到</h2>
+<p>说出输出比较四种模式的区别</p>
+<p>推导 PWM 频率与占空比公式</p>
+<p>配置一路 PWM 并驱动 LED/舵机</p>
+<p>解释为什么改 ARR 会同时影响频率与占空比</p>
+<h2>结构图</h2>
+<img src="img/12_6_3_6_4_输出比较与_PWM_1.png" alt="figure">
+<p>图 12　输出比较的四种模式与 PWM 波形：CCR 决定高电平宽度，ARR 决定周期</p>
+<h3>看图理解</h3>
+<p>左边四个方块是输出比较的四种动作：冻结（不变）、置位（强制高）、复位（强制低）、翻转（取反）。它们都在“CNT 等于 CCR”的那一刻生效。</p>
+<p>右边是 PWM 波形：一个 ARR 周期内，CNT 从 0 数到 ARR；CCR 之前输出一种电平、之后输出另一种，于是形成占空比。频率由 ARR 决定，占空比由 CCR/ARR 决定。</p>
+<h2>核心知识点</h2>
+<h3>1. 输出比较在做什么</h3>
+<p>定时器一直在数 CNT，从 0 到 ARR 循环。输出比较就是给 CNT 设一个“检查点”CCR：CNT 等于 CCR 时，按配置改变输出引脚。</p>
+<p>四种模式决定“怎么变”：冻结保持不变、置位变高、复位变低、翻转取反。PWM 模式本质是“复位 + 置位”的组合。</p>
+<table><tr><th>模式</th><th>CNT=CCR 时的动作</th><th>典型用途</th></tr><tr><td>冻结</td><td>输出不变</td><td>临时停用</td></tr><tr><td>置位</td><td>强制高电平</td><td>单脉冲</td></tr><tr><td>复位</td><td>强制低电平</td><td>单脉冲</td></tr><tr><td>翻转</td><td>电平取反</td><td>输出方波、测频率</td></tr></table>
+<h3>2. PWM 的两种极性</h3>
+<p>PWM1：CNT &lt; CCR 时输出有效电平；PWM2 相反。所谓“有效电平”由 CCER 里的极性位决定，高有效还是低有效可配。</p>
+<p>驱动 LED 时要注意极性：低电平点亮，就要让“有效电平”对应低，否则占空比越大反而越暗。</p>
+<pre>
+TIM_OCInitTypeDef oc;
+oc.TIM_OCMode      = TIM_OCMode_PWM1;
+oc.TIM_OutputState = TIM_OutputState_Enable;
+oc.TIM_Pulse       = 300;              /* CCR */
+oc.TIM_OCPolarity  = TIM_OCPolarity_High;
+TIM_OC1Init(TIM3, &amp;oc);
+TIM_OC1PreloadConfig(TIM3, TIM_OCPreload_Enable);   /* CCR 缓冲 */
+TIM_Cmd(TIM3, ENABLE);
+</pre>
+<h3>3. 频率与占空比</h3>
+<p>频率 = 72MHz ÷ (PSC+1) ÷ (ARR+1)；占空比 = CCR ÷ (ARR+1)。两个公式必须一起记，因为改 ARR 会同时改两个量。</p>
+<table><tr><th>负载</th><th>频率</th><th>PSC/ARR</th><th>CCR 范围</th></tr><tr><td>LED 呼吸灯</td><td>1kHz</td><td>71 / 999</td><td>0–999 渐变</td></tr><tr><td>舵机</td><td>50Hz</td><td>71 / 19999</td><td>500–2500（0.5–2.5ms）</td></tr><tr><td>直流电机</td><td>10–20kHz</td><td>71 / 3599</td><td>0–3599</td></tr></table>
+<h3>4. 引脚为什么要配复用推挽</h3>
+<p>PWM 由定时器外设驱动引脚，不是 GPIO 的 ODR。所以引脚必须配成“复用推挽”，并打开定时器与 GPIO 时钟；部分通道还要 AFIO 重映射。</p>
+<pre>
+GPIO_InitTypeDef g;
+g.GPIO_Pin   = GPIO_Pin_0;
+g.GPIO_Mode  = GPIO_Mode_AF_PP;     /* 复用推挽 */
+g.GPIO_Speed = GPIO_Speed_50MHz;
+GPIO_Init(GPIOA, &amp;g);
+/* 通道 1 对应 TIM2_CH1 = PA0 */
+</pre>
+<h3>5. 三种负载的实战要点</h3>
+<p>LED：串限流电阻，1kHz 以上人眼看不到闪烁，只看到亮度</p>
+<p>舵机：50Hz，脉宽 0.5–2.5ms 对应 0–180°，电源要独立、共地</p>
+<p>直流电机：10–20kHz 避开听觉，必须用驱动芯片，不能直连 GPIO</p>
+<p>共同点：占空比控制“大小”，频率决定“平不平滑”</p>
+<h2>原理推导：为什么这样设计</h2>
+<p>为什么 PWM 能“模拟”模拟量：LED 以 1kHz 通断，人眼积分成平均亮度；电机以 20kHz 通断，绕组电感积分成平均电压。频率越高，积分越平滑，所以负载特性决定频率下限。</p>
+<p>为什么改 ARR 会同时改频率和占空比：占空比的分母就是 ARR+1。固定 CCR 把 ARR 调大，频率下降、占空比也下降——想要“只改频率”，必须同时按比例改 CCR。</p>
+<h2>数值例题</h2>
+<p>例 1：72MHz、PSC=71 → 1MHz；ARR=999 → 1kHz；CCR=300 → 占空比 30%。</p>
+<p>例 2：舵机 50Hz → 周期 20ms。ARR=19999 时 1 个数 1µs，CCR=500 → 0.5ms，CCR=2500 → 2.5ms。</p>
+<p>例 3：想把频率从 1kHz 改到 2kHz，ARR 改 499，若保持 30% 占空比，CCR 要同步改成 150。</p>
+<h2>错误写法对照</h2>
+<table><tr><th>错误写法</th><th>后果</th><th>正确做法</th></tr><tr><td>引脚配成普通推挽</td><td>PWM 不出波形，只有固定电平</td><td>改 GPIO_Mode_AF_PP</td></tr><tr><td>CCR 大于 ARR</td><td>占空比恒为 100%，看起来“一直亮”</td><td>CCR 不超过 ARR</td></tr><tr><td>只改 ARR 想调频率</td><td>占空比跟着变，亮度/转速漂移</td><td>同步按比例改 CCR</td></tr><tr><td>舵机与主板共用电源</td><td>一转就复位、抖动</td><td>舵机独立供电，共地</td></tr></table>
+<h2>深入理解：两个“为什么”</h2>
+<p>输出比较与 PWM 的关系：PWM 不是独立外设，它就是“输出比较 + 自动重装”的组合。理解这一点，就能用同一个定时器同时输出多路不同占空比的 PWM（每个通道一个 CCR）。</p>
+<p>预装载（OCxPE）的意义：CCR 有影子寄存器，开了预装载后新值在周期边界生效，避免改占空比时出现“半个周期”的毛刺。</p>
+<h2>怎么验证你配对了</h2>
+<p>示波器测频率与占空比，和公式对照</p>
+<p>改 CCR 观察亮度/舵机角度连续变化</p>
+<p>把频率从 1kHz 降到 50Hz，看 LED 是否开始闪</p>
+<h2>易错点与排查</h2>
+<table><tr><th>现象</th><th>原因</th><th>解决</th></tr><tr><td>没有波形</td><td>引脚没配复用或定时器没使能</td><td>查 AF_PP 与 TIM_Cmd</td></tr><tr><td>占空比不线性</td><td>CCR 超过 ARR 或极性反了</td><td>检查 CCR 与 OCPolarity</td></tr><tr><td>舵机抖动</td><td>频率不是 50Hz 或电源不稳</td><td>核对 ARR，独立供电</td></tr><tr><td>电机啸叫</td><td>频率落在听觉范围</td><td>提到 16kHz 以上</td></tr></table>
+<h2>面试追问</h2>
+<p>Q1. 输出比较四种模式？</p>
+<p>A：冻结、置位、复位、翻转。</p>
+<p>Q2. PWM 频率公式？</p>
+<p>A：72M ÷ (PSC+1) ÷ (ARR+1)。</p>
+<p>Q3. 占空比公式？</p>
+<p>A：CCR ÷ (ARR+1)。</p>
+<p>Q4. 为什么用复用推挽？</p>
+<p>A：引脚由定时器外设驱动，不是 ODR。</p>
+<p>Q5. PWM1 与 PWM2 的区别？</p>
+<p>A：有效电平与 CNT&lt;CCR 的对应关系相反。</p>
+<p>Q6. OCxPE 是什么？</p>
+<p>A：CCR 预装载使能，周期边界生效。</p>
+<p>Q7. 舵机为什么 50Hz？</p>
+<p>A：标准舵机协议要求 20ms 周期。</p>
+<p>Q8. 一路定时器能出几路 PWM？</p>
+<p>A：每个通道一路，通用定时器通常 4 路。</p>
+<h2>自测题（先盖住答案）</h2>
+<p>1. ARR=999、PSC=71，频率多少？</p>
+<p>答：1kHz。</p>
+<p>2. CCR=250、ARR=999，占空比？</p>
+<p>答：25%。</p>
+<p>3. 舵机 1.5ms 对应多少度？</p>
+<p>答：约 90°（中位）。</p>
+<p>4. 改频率要同时改什么？</p>
+<p>答：CCR，保持占空比不变。</p>
+<h2>复习清单</h2>
+<p>☐  能画 PWM 波形</p>
+<p>☐  会推两个公式</p>
+<p>☐  能配一路 PWM</p>
+<p>☐  知道三种负载的频率</p>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+</body></html>

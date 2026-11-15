@@ -1,0 +1,116 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5-1_EXTI 外部中断</title>
+<link rel="stylesheet" href="style.css"></head><body>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+<h1>[5-1] EXTI 外部中断</h1>
+<p>课程时长：约 42 分钟　|　深度版　|　配套结构图与看图理解</p>
+<h2>本节定位</h2>
+<p>从“轮询”跨到“事件驱动”。这是嵌入式实时性的起点：CPU 不再傻等，而是让硬件在事件发生时叫它。</p>
+<p>中断也是后面 RTOS 的基础：任务切换、信号量唤醒，底层都是中断。</p>
+<h2>学完你应该能做到</h2>
+<p>说清中断响应全过程</p>
+<p>掌握 NVIC 优先级分组</p>
+<p>独立配置一条 EXTI 中断</p>
+<p>理解“中断只置标志”的原则</p>
+<h2>结构图</h2>
+<img src="img/08_5_1_EXTI_外部中断_1.png" alt="figure">
+<p>图 8　EXTI 中断链路：引脚 → AFIO 映射 → EXTI 线 → NVIC → CPU</p>
+<h3>看图理解</h3>
+<p>顺着箭头走：引脚跳变 → AFIO 映射到某条 EXTI 线 → EXTI 按设定边沿产生请求 → NVIC 按优先级排队 → CPU 保存现场跳进 ISR。</p>
+<p>图里 ISR 框写的是“置标志、清挂起、返回”，这就是最短路径。最常见错误是漏掉“清挂起”：中断返回后请求仍在，立刻又进，主程序几乎不跑。</p>
+<h2>核心知识点</h2>
+<h3>1. 中断响应过程</h3>
+<p>外设请求 → NVIC 排序 → CPU 自动压栈（R0–R3、R12、LR、PC、xPSR）→ 查向量表跳转 → 执行 ISR → 恢复现场返回。</p>
+<p>整个过程硬件完成，软件只需写 ISR 并在返回前清标志。</p>
+<h3>2. NVIC 优先级</h3>
+<table><tr><th>概念</th><th>含义</th><th>注意</th></tr><tr><td>抢占优先级</td><td>可打断低优先级的 ISR</td><td>数值越小越高</td></tr><tr><td>子优先级</td><td>同时挂起时的顺序</td><td>不能互相打断</td></tr><tr><td>分组</td><td>决定几个 bit 给抢占</td><td>全工程只能用一种</td></tr><tr><td>数值范围</td><td>F1 为 4 位，0–15</td><td>0 最高</td></tr></table>
+<h3>3. EXTI 链路与配置五步</h3>
+<pre>
+RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO, ENABLE);
+GPIO_InitTypeDef g;
+g.GPIO_Pin  = GPIO_Pin_1;
+g.GPIO_Mode = GPIO_Mode_IPU;
+GPIO_Init(GPIOB, &amp;g);
+GPIO_EXTILineConfig(GPIO_PortSourceGPIOB, GPIO_PinSource1);
+EXTI_InitTypeDef e;
+e.EXTI_Line    = EXTI_Line1;
+e.EXTI_Mode    = EXTI_Mode_Interrupt;
+e.EXTI_Trigger = EXTI_Trigger_Falling;
+e.EXTI_LineCmd = ENABLE;
+EXTI_Init(&amp;e);
+NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
+NVIC_InitTypeDef n;
+n.NVIC_IRQChannel = EXTI1_IRQn;
+n.NVIC_IRQChannelPreemptionPriority = 1;
+n.NVIC_IRQChannelSubPriority = 1;
+n.NVIC_IRQChannelCmd = ENABLE;
+NVIC_Init(&amp;n);
+</pre>
+<h3>4. ISR 写法</h3>
+<pre>
+void EXTI1_IRQHandler(void)
+{
+if (EXTI_GetITStatus(EXTI_Line1) != RESET)
+{
+key_flag = 1;                       /* 只置标志 */
+EXTI_ClearITPendingBit(EXTI_Line1); /* 必须清 */
+}
+}
+</pre>
+<h3>5. 中断设计原则</h3>
+<p>ISR 越短越好：执行期间同级与低优先级中断被延迟</p>
+<p>不在 ISR 里延时、打印、malloc</p>
+<p>共享变量加 volatile</p>
+<p>中断与主程序不抢同一外设</p>
+<p>用标志/队列把处理搬到主循环</p>
+<h2>原理推导：为什么这样设计</h2>
+<p>为什么要 AFIO：F103 有上百个引脚，但 EXTI 只有 16 条线。AFIO 负责把“某端口第 n 号引脚”接到“第 n 条线”，同一时刻只能接一个。</p>
+<p>优先级分组的本质是“把 4 位优先级切成两段”：分组 2 表示 2 位抢占（0–3）+ 2 位子优先级（0–3）。</p>
+<h2>数值例题</h2>
+<p>例：分组 2 时，抢占 0–3、子优先级 0–3。若 A 抢占 1、B 抢占 0，B 可打断 A；两者抢占相同则比较子优先级，但不会互相打断。</p>
+<p>中断延迟估算：压栈 12 个周期 + 取向量 + 跳转，72MHz 下约 0.3µs，远小于一次函数调用。</p>
+<h2>错误写法对照</h2>
+<table><tr><th>错误写法</th><th>后果</th><th>正确做法</th></tr><tr><td>忘清挂起位</td><td>反复进中断，主程序不跑</td><td>ISR 末尾清除</td></tr><tr><td>只开 EXTI 不开 AFIO 时钟</td><td>映射静默失效</td><td>补 AFIO 时钟</td></tr><tr><td>分组在运行中反复改</td><td>优先级行为混乱</td><td>启动时设一次</td></tr><tr><td>ISR 里 Delay 或 printf</td><td>系统卡顿、死锁</td><td>只置标志</td></tr></table>
+<h2>深入理解：两个“为什么”</h2>
+<p>AFIO 存在的意义：引脚数远多于 EXTI 线数（F103 只有 16 条），必须用 AFIO 把“某端口的第 n 号引脚”映射到“第 n 条 EXTI 线”。同一时刻 PA0/PB0/PC0 只能有一个接到 EXTI0。</p>
+<p>为什么必须清挂起位：EXTI 请求是锁存的，不清就一直有效。ISR 返回后 NVIC 看到请求仍在，立刻再次进入，表现为程序卡在中断里。</p>
+<h2>怎么验证你配对了</h2>
+<p>按键触发计数，串口打印确认没有重复触发</p>
+<p>在 ISR 里翻转 GPIO，示波器测中断频率</p>
+<p>注释掉清挂起位，观察卡死现象</p>
+<h2>易错点与排查</h2>
+<table><tr><th>现象</th><th>原因</th><th>解决</th></tr><tr><td>一进中断就卡死</td><td>没清挂起位</td><td>ISR 末尾清除</td></tr><tr><td>中断不进</td><td>AFIO 时钟或 NVIC 没开</td><td>补时钟与 NVIC</td></tr><tr><td>优先级不生效</td><td>分组设置与预期不符</td><td>统一分组</td></tr><tr><td>主循环读不到变量</td><td>没加 volatile</td><td>声明为 volatile</td></tr></table>
+<h2>面试追问</h2>
+<p>Q1. 中断响应保存哪些寄存器？</p>
+<p>A：R0–R3、R12、LR、PC、xPSR。</p>
+<p>Q2. 抢占与子优先级的区别？</p>
+<p>A：抢占能打断 ISR，子优先级只决定同时挂起的顺序。</p>
+<p>Q3. 为什么 ISR 不能 printf？</p>
+<p>A：不可重入且耗时。</p>
+<p>Q4. EXTI 线与引脚关系？</p>
+<p>A：一条线同时只能映射一个端口的同号引脚。</p>
+<p>Q5. 边沿触发与电平触发的区别？</p>
+<p>A：边沿只响应跳变瞬间，电平在保持期间持续有效。</p>
+<p>Q6. 中断优先级数值越小越高吗？</p>
+<p>A：是，0 最高。</p>
+<p>Q7. 中断延迟大概多少？</p>
+<p>A：压栈与跳转约十几个周期，72MHz 下亚微秒级。</p>
+<p>Q8. 同一条 EXTI 线能接两个引脚吗？</p>
+<p>A：不能，同一时刻只能映射一个。</p>
+<h2>自测题（先盖住答案）</h2>
+<p>1. 配 EXTI 要先开哪个复用时钟？</p>
+<p>答：AFIO。</p>
+<p>2. 中断服务函数名在哪查？</p>
+<p>答：启动文件的向量表。</p>
+<p>3. 不清挂起会怎样？</p>
+<p>答：反复进入中断。</p>
+<p>4. 共享变量为什么要 volatile？</p>
+<p>答：防止编译器优化成只读一次。</p>
+<h2>复习清单</h2>
+<p>☐  能画中断响应流程</p>
+<p>☐  会配 NVIC 分组</p>
+<p>☐  能默写五步</p>
+<p>☐  知道 volatile 的必要性</p>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+</body></html>

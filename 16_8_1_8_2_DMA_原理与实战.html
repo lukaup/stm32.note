@@ -1,0 +1,119 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>8-1~8-2_DMA 原理与实战</title>
+<link rel="stylesheet" href="style.css"></head><body>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+<h1>[8-1~8-2] DMA 原理与实战</h1>
+<p>课程时长：约 65 分钟（两节）　|　深度版　|　配套结构图与看图理解</p>
+<h2>本节定位</h2>
+<p>8-1 讲原理：DMA 是独立于 CPU 的搬运工；8-2 是实战：内存到内存、外设到内存，以及 ADC + DMA 连续采集。</p>
+<p>它的价值不是“更快”，而是“把 CPU 解放出来”——搬运期间 CPU 可以算别的、可以睡觉。</p>
+<h2>学完你应该能做到</h2>
+<p>说清 DMA 的通道、请求与优先级</p>
+<p>配置一次内存到内存搬运</p>
+<p>用 ADC + DMA 做连续采集</p>
+<p>理解循环模式与双缓冲</p>
+<h2>结构图</h2>
+<img src="img/16_8_1_8_2_DMA_原理与实战_1.png" alt="figure">
+<p>图 15　DMA 数据通路：外设与内存之间直接搬运，CPU 只负责启动与处理</p>
+<h3>看图理解</h3>
+<p>左边是外设，中间是 DMA 控制器，右边是内存。数据从外设直接进内存，不经过 CPU 寄存器。</p>
+<p>下方三种模式：循环模式搬完自动回到开头，半满/全满中断告诉你“可以处理了”。双缓冲就是利用这两个中断交替处理，做到不丢数据。</p>
+<h2>核心知识点</h2>
+<h3>1. DMA 的四个要素</h3>
+<table><tr><th>要素</th><th>含义</th><th>注意</th></tr><tr><td>通道</td><td>每个外设请求映射到固定通道</td><td>选错通道数据不动</td></tr><tr><td>传输方向</td><td>外设→内存 / 内存→外设 / 内存→内存</td><td>内存到内存只有 DMA1 支持</td></tr><tr><td>地址自增</td><td>内存自增、外设固定</td><td>配反会写飞</td></tr><tr><td>优先级</td><td>多个请求同时到达时的仲裁</td><td>高优先级先搬</td></tr></table>
+<h3>2. 一次内存到内存搬运</h3>
+<pre>
+RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
+DMA_InitTypeDef d;
+d.DMA_PeripheralBaseAddr = (uint32_t)src;
+d.DMA_MemoryBaseAddr     = (uint32_t)dst;
+d.DMA_DIR                = DMA_DIR_PeripheralSRC;
+d.DMA_BufferSize         = 64;
+d.DMA_PeripheralInc      = DMA_PeripheralInc_Enable;
+d.DMA_MemoryInc          = DMA_MemoryInc_Enable;
+d.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+d.DMA_MemoryDataSize     = DMA_MemoryDataSize_Byte;
+d.DMA_Mode               = DMA_Mode_Normal;
+d.DMA_Priority           = DMA_Priority_Medium;
+DMA_Init(DMA1_Channel1, &amp;d);
+DMA_Cmd(DMA1_Channel1, ENABLE);
+while (DMA_GetFlagStatus(DMA1_FLAG_TC1) == RESET);
+DMA_ClearFlag(DMA1_FLAG_TC1);
+</pre>
+<h3>3. 循环模式与双缓冲</h3>
+<p>循环模式下，搬完 BufferSize 个数据自动回到开头继续搬，适合连续采集。</p>
+<p>双缓冲把这套机制用满：前半满时处理前半，后半继续写；后半满时反过来。CPU 处理与 DMA 搬运并行。</p>
+<table><tr><th>模式</th><th>行为</th><th>适用</th></tr><tr><td>Normal</td><td>搬完停止</td><td>一次性拷贝</td></tr><tr><td>Circular</td><td>搬完回到开头</td><td>ADC 连续采集</td></tr><tr><td>双缓冲</td><td>半满/全满交替</td><td>实时处理不丢数据</td></tr></table>
+<h3>4. ADC + DMA 连续采集</h3>
+<p>定时器触发 ADC → 每次转换完 DMA 自动搬进缓冲区 → 半满/全满中断通知 CPU。全程 CPU 不参与采样。</p>
+<p>采样率由定时器决定，不再受软件轮询速度限制，这是“稳定采样”的关键。</p>
+<pre>
+/* ADC 侧 */
+ADC_DMACmd(ADC1, ENABLE);
+/* DMA 侧：外设地址固定，内存自增，循环模式 */
+d.DMA_PeripheralBaseAddr = (uint32_t)&amp;ADC1-&gt;DR;
+d.DMA_MemoryBaseAddr     = (uint32_t)adc_buf;
+d.DMA_DIR                = DMA_DIR_PeripheralSRC;
+d.DMA_BufferSize         = 256;
+d.DMA_PeripheralInc      = DMA_PeripheralInc_Disable;
+d.DMA_MemoryInc          = DMA_MemoryInc_Enable;
+d.DMA_Mode               = DMA_Mode_Circular;
+DMA_Init(DMA1_Channel1, &amp;d);
+DMA_ITConfig(DMA1_Channel1, DMA_IT_HT | DMA_IT_TC, ENABLE);
+</pre>
+<h3>5. 带宽与总线竞争</h3>
+<p>DMA 与 CPU 共用总线。搬运频繁时，CPU 访问内存会被插入等待周期，表现为“程序变慢”。</p>
+<p>估算：ADC 1Msps、16 位 → 2MB/s，对 72MHz 的 AHB 不算大；但若同时有多路 DMA + 大量内存访问，就要注意优先级。</p>
+<table><tr><th>场景</th><th>带宽需求</th><th>影响</th></tr><tr><td>ADC 1Msps/16bit</td><td>2MB/s</td><td>可忽略</td></tr><tr><td>SPI 18MHz 全速</td><td>约 2.25MB/s</td><td>可接受</td></tr><tr><td>多路同时搬运</td><td>叠加</td><td>CPU 可能被拖慢</td></tr></table>
+<h2>原理推导：为什么这样设计</h2>
+<p>为什么 DMA 能省 CPU：搬运由硬件状态机完成，CPU 只需初始化几个寄存器，之后每个数据都不需要取指、读寄存器、写内存。</p>
+<p>为什么循环模式适合采集：采集是无限的，Normal 模式搬完就停，必须反复重启；Circular 模式自动回到开头，配合半满中断就是天然的“流水线”。</p>
+<h2>数值例题</h2>
+<p>例 1：ADC 1Msps、12 位右对齐存 16 位，带宽 = 2MB/s；缓冲区 256 个采样点，约 256µs 写满。</p>
+<p>例 2：半满中断每 128 个点触发一次，即约 128µs 一次，CPU 有充足时间处理。</p>
+<p>例 3：内存到内存搬 1KB，DMA 在 72MHz 总线上几微秒完成，而逐字节循环要上百微秒。</p>
+<h2>错误写法对照</h2>
+<table><tr><th>错误写法</th><th>后果</th><th>正确做法</th></tr><tr><td>忘开 DMA 时钟</td><td>配置无效，数据不动</td><td>RCC_AHBPeriphClockCmd</td></tr><tr><td>通道映射错</td><td>请求收不到</td><td>查参考手册的请求映射表</td></tr><tr><td>外设地址自增</td><td>读到错位数据</td><td>外设地址固定</td></tr><tr><td>缓冲区越界</td><td>踩坏其他变量</td><td>BufferSize 与数组长度一致</td></tr></table>
+<h2>深入理解：两个“为什么”</h2>
+<p>DMA 与中断的分工：中断负责“告诉我发生了什么”，DMA 负责“把数据搬好”。两者结合才有“后台采集、前台处理”的结构。</p>
+<p>双缓冲为什么能防丢数据：CPU 处理 A 区时，DMA 往 B 区写；B 区满时切换。只要处理时间小于半缓冲的采集时间，就不会覆盖未处理的数据。</p>
+<h2>怎么验证你配对了</h2>
+<p>内存到内存搬运后逐个比对源与目的</p>
+<p>ADC + DMA 采 1kHz 方波，看缓冲区波形是否完整</p>
+<p>把采样率提高一倍，观察半满中断是否仍来得及处理</p>
+<h2>易错点与排查</h2>
+<table><tr><th>现象</th><th>原因</th><th>解决</th></tr><tr><td>数据全 0</td><td>DMA 没使能或通道错</td><td>查 DMA_Cmd 与映射</td></tr><tr><td>只搬一次</td><td>Normal 模式</td><td>改 Circular</td></tr><tr><td>数据错位</td><td>地址自增配反</td><td>外设固定、内存自增</td></tr><tr><td>偶尔丢点</td><td>缓冲区太小/处理太慢</td><td>加大缓冲或用双缓冲</td></tr></table>
+<h2>面试追问</h2>
+<p>Q1. DMA 的核心价值？</p>
+<p>A：不占 CPU 完成数据搬运。</p>
+<p>Q2. 通道映射错了会怎样？</p>
+<p>A：请求收不到，数据不动。</p>
+<p>Q3. 循环模式用在哪？</p>
+<p>A：连续采集。</p>
+<p>Q4. 半满中断的意义？</p>
+<p>A：提前处理，避免覆盖。</p>
+<p>Q5. 内存到内存哪些 DMA 支持？</p>
+<p>A：F103 只有 DMA1 支持。</p>
+<p>Q6. DMA 会拖慢 CPU 吗？</p>
+<p>A：会争总线，但通常可接受。</p>
+<p>Q7. 双缓冲怎么实现？</p>
+<p>A：半满/全满交替处理。</p>
+<p>Q8. ADC+DMA 采样率由谁决定？</p>
+<p>A：触发源（通常定时器）。</p>
+<h2>自测题（先盖住答案）</h2>
+<p>1. DMA 搬运时 CPU 在干什么？</p>
+<p>答：可以执行其他任务。</p>
+<p>2. ADC 连续采集用哪种模式？</p>
+<p>答：Circular。</p>
+<p>3. 半满中断何时触发？</p>
+<p>答：搬完一半时。</p>
+<p>4. 外设地址要自增吗？</p>
+<p>答：不要，固定。</p>
+<h2>复习清单</h2>
+<p>☐  懂四个要素</p>
+<p>☐  会配内存搬运</p>
+<p>☐  能配 ADC+DMA</p>
+<p>☐  理解双缓冲</p>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+</body></html>
