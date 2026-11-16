@@ -1,0 +1,120 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>9-4~9-6_串口数据包与下载</title>
+<link rel="stylesheet" href="style.css"></head><body>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+<h1>[9-4~9-6] 串口数据包与下载</h1>
+<p>课程时长：约 90 分钟（三节）　|　深度版　|　配套结构图与看图理解</p>
+<h2>本节定位</h2>
+<p>9-4 做 HEX 数据包，9-5 做文本数据包，9-6 讲 FlyMcu 与 ST-LINK Utility 下载。</p>
+<p>这一节把“发字符串”升级成“发协议”——有帧头、有长度、有校验，才能可靠地传结构化数据。</p>
+<h2>学完你应该能做到</h2>
+<p>设计一个带校验的帧格式</p>
+<p>用状态机解析且不被半包卡死</p>
+<p>实现 HEX 包与文本包两种收发</p>
+<p>用 FlyMcu 通过串口下载程序</p>
+<h2>结构图</h2>
+<img src="img/18_9_4_9_6_串口数据包与下载_1.png" alt="figure">
+<p>图 18　数据包结构（帧头/长度/命令/数据/校验）与解析状态机</p>
+<h3>看图理解</h3>
+<p>帧结构从左到右：帧头、长度、命令、数据、校验。长度字段告诉接收方“还要收多少字节”，这是解决粘包的关键。</p>
+<p>下方是解析状态机：每来一个字节走一步，收满一帧再校验、分发。校验失败就丢弃，回到等帧头——不要“尽力解析”。</p>
+<h2>核心知识点</h2>
+<h3>1. HEX 包的设计</h3>
+<p>典型格式：0xAA 0x55 | 长度 | 命令 | 数据 | 校验。校验可用累加和或 CRC8。</p>
+<p>长度建议只算“命令+数据”，收发双方约定一致即可，但必须写进文档。</p>
+<table><tr><th>字段</th><th>字节数</th><th>作用</th></tr><tr><td>帧头</td><td>1–2</td><td>定位一帧的开始</td></tr><tr><td>长度</td><td>1</td><td>告诉接收方还要收多少</td></tr><tr><td>命令</td><td>1</td><td>区分功能</td></tr><tr><td>数据</td><td>0–N</td><td>负载</td></tr><tr><td>校验</td><td>1</td><td>累加和或 CRC8</td></tr></table>
+<h3>2. 文本包的设计</h3>
+<p>文本包用 ASCII，形如 `LED_ON\r\n` 或 `SET,1,100\r\n`。优点是可以用串口助手直接敲、便于调试；缺点是体积大、解析要处理字符串。</p>
+<p>解析时用 `strtok` 按逗号切分，或自己扫描；注意 `\r\n` 结束符。</p>
+<pre>
+/* 文本包：SET,1,100\r\n */
+char cmd[16]; int id, val;
+if (sscanf(buf, "SET,%d,%d", &amp;id, &amp;val) == 2) {
+/* 处理 */
+}
+</pre>
+<h3>3. 解析状态机</h3>
+<pre>
+typedef enum { WAIT_HEAD, GET_LEN, GET_DATA, CHECK } st_t;
+void parse_byte(uint8_t b)
+{
+static st_t st = WAIT_HEAD;
+static uint8_t len, idx, sum;
+switch (st) {
+case WAIT_HEAD:
+if (b == 0xAA) { st = GET_LEN; }
+break;
+case GET_LEN:
+len = b; idx = 0; sum = b; st = GET_DATA;
+break;
+case GET_DATA:
+buf[idx++] = b; sum += b;
+if (idx &gt;= len) st = CHECK;
+break;
+case CHECK:
+if (b == sum) { dispatch(buf, len); }
+st = WAIT_HEAD;
+break;
+}
+}
+</pre>
+<h3>4. 粘包、半包与超时</h3>
+<p>粘包：一次收到两帧 → 状态机按长度切分，天然解决</p>
+<p>半包：只收到前半帧 → 状态机停在中间，等后续字节</p>
+<p>超时：等太久没后续 → 定时器清零状态机，避免永久卡住</p>
+<h3>5. 串口下载：FlyMcu 与 ST-LINK Utility</h3>
+<p>FlyMcu 走串口 ISP：BOOT0 接 1、复位进 Bootloader，用 USART1 下载 hex，完成后 BOOT0 接回 0 再复位。</p>
+<p>ST-LINK Utility 走 SWD：直接烧录与读保护设置，不需要改 BOOT0，日常更常用。</p>
+<table><tr><th>方式</th><th>接口</th><th>需要改 BOOT0</th><th>适用</th></tr><tr><td>FlyMcu</td><td>USART1</td><td>是</td><td>无 ST-Link 时</td></tr><tr><td>ST-LINK Utility</td><td>SWD</td><td>否</td><td>日常开发</td></tr></table>
+<h2>原理推导：为什么这样设计</h2>
+<p>为什么必须有校验：串口没有纠错能力，一位出错就可能让“开灯”变成“关电机”。累加和能挡住绝大多数单字节错误，CRC8 更强。</p>
+<p>为什么长度字段不能省：没有长度，接收方只能靠“帧尾”判断结束，而数据里可能刚好出现帧尾字节，必然误判。</p>
+<h2>数值例题</h2>
+<p>例：一帧 8 字节（帧头 2 + 长度 1 + 命令 1 + 数据 3 + 校验 1），115200 下传输约 8×10/115200 ≈ 0.7ms。</p>
+<p>每秒最多约 1400 帧——足够控制类应用；若数据量大，应考虑提高波特率或改用二进制压缩。</p>
+<p>校验用累加和时，注意溢出按 8 位截断（uint8_t 自然回绕）。</p>
+<h2>错误写法对照</h2>
+<table><tr><th>错误写法</th><th>后果</th><th>正确做法</th></tr><tr><td>中断里直接解析</td><td>半包时阻塞，丢后续字节</td><td>中断入队，主循环解析</td></tr><tr><td>没有超时</td><td>半包后永久卡住</td><td>定时器复位状态机</td></tr><tr><td>校验失败仍解析</td><td>错误命令被执行</td><td>丢弃并回等帧头</td></tr><tr><td>长度含帧头</td><td>收发双方理解不一致</td><td>明确约定并写文档</td></tr></table>
+<h2>深入理解：两个“为什么”</h2>
+<p>状态机为什么比 if 嵌套可靠：状态机把“当前收到哪一步”显式保存，任何时刻来任何字节都有确定行为；if 嵌套依赖局部变量与顺序，半包时极易错乱。</p>
+<p>文本包与 HEX 包的取舍：文本便于人读与调试，HEX 省带宽、解析快；产品里常见“调试用文本、量产用二进制”。</p>
+<h2>怎么验证你配对了</h2>
+<p>用串口助手连发两帧，确认能正确切分（粘包）</p>
+<p>只发前半帧，停顿后再发后半帧，确认不丢（半包）</p>
+<p>故意改错一个字节，确认校验失败被丢弃</p>
+<h2>易错点与排查</h2>
+<table><tr><th>现象</th><th>原因</th><th>解决</th></tr><tr><td>数据错位</td><td>长度字段算错</td><td>统一约定：长度只算命令+数据</td></tr><tr><td>偶发死机</td><td>半包无超时</td><td>加超时复位</td></tr><tr><td>命令不执行</td><td>校验算法两边不一致</td><td>用同一份代码算校验</td></tr><tr><td>下载失败</td><td>BOOT0 没接 1 或串口被占用</td><td>检查跳线与串口助手</td></tr></table>
+<h2>面试追问</h2>
+<p>Q1. 为什么要帧头？</p>
+<p>A：在一串字节里定位一帧的开始。</p>
+<p>Q2. 长度字段解决什么问题？</p>
+<p>A：粘包与半包。</p>
+<p>Q3. 累加和怎么算？</p>
+<p>A：所有字节相加，取低 8 位。</p>
+<p>Q4. CRC8 比累加和强在哪？</p>
+<p>A：能发现更多类型的错误。</p>
+<p>Q5. 文本包的优点？</p>
+<p>A：可读、可用串口助手直接调试。</p>
+<p>Q6. FlyMcu 需要改什么？</p>
+<p>A：BOOT0 接 1 进 Bootloader。</p>
+<p>Q7. ST-LINK Utility 走什么接口？</p>
+<p>A：SWD。</p>
+<p>Q8. 解析放中断里行不行？</p>
+<p>A：不行，半包会阻塞。</p>
+<h2>自测题（先盖住答案）</h2>
+<p>1. 一帧最少包含哪些字段？</p>
+<p>答：帧头、长度、命令、校验。</p>
+<p>2. 粘包怎么解决？</p>
+<p>答：按长度切分。</p>
+<p>3. 半包卡住怎么办？</p>
+<p>答：加超时复位。</p>
+<p>4. 下载后为什么要恢复 BOOT0？</p>
+<p>答：否则不从 Flash 启动。</p>
+<h2>复习清单</h2>
+<p>☐  能设计帧格式</p>
+<p>☐  会写状态机</p>
+<p>☐  懂粘包半包</p>
+<p>☐  会两种下载方式</p>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+</body></html>

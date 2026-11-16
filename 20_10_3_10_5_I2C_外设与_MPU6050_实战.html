@@ -1,0 +1,109 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>10-3~10-5_I2C 外设与 MPU6050 实战</title>
+<link rel="stylesheet" href="style.css"></head><body>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+<h1>[10-3~10-5] I2C 外设与 MPU6050 实战</h1>
+<p>课程时长：约 90 分钟（三节）　|　深度版　|　配套结构图与看图理解</p>
+<h2>本节定位</h2>
+<p>10-3 讲硬件 I2C 外设，10-4 用软件 I2C 读 MPU6050，10-5 换成硬件 I2C。</p>
+<p>同一件事两种实现：软件模拟让你看懂时序，硬件外设让你省 CPU——先软后硬，理解最深。</p>
+<h2>学完你应该能做到</h2>
+<p>用 GPIO 模拟出完整 I2C 时序</p>
+<p>配置硬件 I2C 并处理事件</p>
+<p>读出 MPU6050 的加速度/角速度</p>
+<p>知道总线死锁怎么恢复</p>
+<h2>结构图</h2>
+<img src="img/20_10_3_10_5_I2C_外设与_MPU6050_实战_1.png" alt="figure">
+<p>图 19　读取一个寄存器：写地址 → 重复起始 → 读数据 → NACK + STOP</p>
+<h3>看图理解</h3>
+<p>读一个寄存器分两段：先写“我要读哪个寄存器”，再用重复起始切换到读，把数据取回来。</p>
+<p>最后一字节要回 NACK，告诉从机“不要再发了”，然后 STOP 释放总线。</p>
+<h2>核心知识点</h2>
+<h3>1. 软件 I2C 的五个函数</h3>
+<p>Start、SendByte、RecvAck、RecvByte、Stop。每个函数内部就是拉高拉低 SCL/SDA，并插入微秒级延时。</p>
+<p>GPIO 必须配成开漏输出，否则无法让从机拉低 SDA 应答。</p>
+<pre>
+void I2C_W_SCL(uint8_t b) { GPIO_WriteBit(GPIOB, GPIO_Pin_8, b); Delay_us(2); }
+void I2C_W_SDA(uint8_t b) { GPIO_WriteBit(GPIOB, GPIO_Pin_9, b); Delay_us(2); }
+void I2C_Start(void)
+{
+I2C_W_SDA(1); I2C_W_SCL(1);
+I2C_W_SDA(0);            /* SCL 高时 SDA 下降 */
+I2C_W_SCL(0);
+}
+</pre>
+<h3>2. 硬件 I2C 的事件模型</h3>
+<p>硬件 I2C 把时序拆成若干“事件”：起始已发送、地址已发送、收到数据、应答等，每个事件对应一个标志位，程序按事件推进。</p>
+<p>调试难点在于：某个事件没等到就卡死，必须加超时。</p>
+<table><tr><th>事件</th><th>含义</th></tr><tr><td>SB</td><td>起始已发送</td></tr><tr><td>ADDR</td><td>地址已发送并收到应答</td></tr><tr><td>RXNE</td><td>收到一个字节</td></tr><tr><td>TXE</td><td>发送寄存器空</td></tr><tr><td>BTF</td><td>字节传输完成</td></tr></table>
+<h3>3. 软件 vs 硬件 I2C</h3>
+<table><tr><th>对比</th><th>软件 I2C</th><th>硬件 I2C</th></tr><tr><td>CPU 占用</td><td>高（一位一位等）</td><td>低</td></tr><tr><td>速率</td><td>几十 kHz</td><td>100k / 400kHz</td></tr><tr><td>引脚</td><td>任意 GPIO</td><td>固定复用</td></tr><tr><td>调试</td><td>透明，好改</td><td>事件多，易卡</td></tr></table>
+<h3>4. 读出加速度并换算</h3>
+<pre>
+int16_t ax = (buf[0] &lt;&lt; 8) | buf[1];
+int16_t ay = (buf[2] &lt;&lt; 8) | buf[3];
+int16_t az = (buf[4] &lt;&lt; 8) | buf[5];
+/* ±2g 量程：16384 LSB/g */
+float ax_g = ax / 16384.0f;
+</pre>
+<h3>5. 总线死锁与恢复</h3>
+<p>如果从机在传输中复位，可能一直拉低 SDA，主机再也发不出起始——这就是死锁。</p>
+<p>恢复办法：把 SCL 当普通 GPIO，手工打 9 个时钟脉冲，再发一个 STOP，让从机把剩余位吐完。</p>
+<pre>
+for (i = 0; i &lt; 9; i++) {
+I2C_W_SCL(1); I2C_W_SCL(0);
+}
+I2C_Stop();
+</pre>
+<h2>原理推导：为什么这样设计</h2>
+<p>软件模拟的价值：你能亲眼看到每一位怎么变，理解起始、应答、重复起始；换引脚也方便。这是“学会”与“会调库”的区别。</p>
+<p>硬件 I2C 为什么难调：事件顺序固定，少等一个标志就卡死；加上从机时钟拉伸，超时设计不好就死机。所以产品里常见“硬件 + 超时 + 恢复”。</p>
+<h2>数值例题</h2>
+<p>例：软件 I2C 每半周期 2µs，一位 4µs，一字节 9 位 ≈ 36µs，整帧读 6 字节约 0.3ms——比硬件慢，但够用。</p>
+<p>硬件 400kHz：一字节 9 位 ≈ 22.5µs，6 字节约 0.14ms。</p>
+<p>±2g 量程、16384 LSB/g：读数 8192 对应 0.5g；±4g 时灵敏度减半。</p>
+<h2>错误写法对照</h2>
+<table><tr><th>错误写法</th><th>后果</th><th>正确做法</th></tr><tr><td>GPIO 配成推挽</td><td>从机拉不低 SDA，读不到 ACK</td><td>改开漏</td></tr><tr><td>读最后一字节回 ACK</td><td>从机继续发，总线乱</td><td>回 NACK</td></tr><tr><td>没有超时</td><td>从机不在线时死等</td><td>加超时退出</td></tr><tr><td>总线死锁不恢复</td><td>后续全部失败</td><td>9 时钟 + STOP</td></tr></table>
+<h2>深入理解：两个“为什么”</h2>
+<p>为什么读操作要“写地址再读”：I2C 没有“随机读”指令，必须先把寄存器地址写进从机内部的地址指针，再切换到读，从机才会从该地址开始吐数据。</p>
+<p>软件 I2C 的延时不能省：从机要求建立/保持时间，删掉 Delay_us 后逻辑没错但时序违规，表现为“偶尔能读、偶尔失败”。</p>
+<h2>怎么验证你配对了</h2>
+<p>读 WHO_AM_I 返回 0x68，确认链路通</p>
+<p>静止时 Z 轴约 1g、X/Y 接近 0</p>
+<p>快速翻转板子，看加速度数值变化</p>
+<h2>易错点与排查</h2>
+<table><tr><th>现象</th><th>原因</th><th>解决</th></tr><tr><td>读不到 ACK</td><td>引脚没开漏或无上拉</td><td>改模式、加上拉</td></tr><tr><td>数值不变</td><td>寄存器地址写错</td><td>核对 0x3B/0x43</td></tr><tr><td>偶尔卡死</td><td>无超时</td><td>加超时与恢复</td></tr><tr><td>数据跳变</td><td>量程配置与换算不符</td><td>统一量程与系数</td></tr></table>
+<h2>面试追问</h2>
+<p>Q1. 软件 I2C 要几个函数？</p>
+<p>A：Start/SendByte/RecvAck/RecvByte/Stop。</p>
+<p>Q2. GPIO 为什么开漏？</p>
+<p>A：从机要能拉低 SDA 应答。</p>
+<p>Q3. 硬件 I2C 的事件有哪些？</p>
+<p>A：SB、ADDR、RXNE、TXE、BTF。</p>
+<p>Q4. 总线死锁怎么恢复？</p>
+<p>A：9 个时钟 + STOP。</p>
+<p>Q5. MPU6050 加速度怎么换算？</p>
+<p>A：原始值 ÷ 灵敏度（±2g 时 16384）。</p>
+<p>Q6. 为什么读最后要 NACK？</p>
+<p>A：告诉从机停止发送。</p>
+<p>Q7. 软件 I2C 能多快？</p>
+<p>A：受延时限制，通常几十 kHz。</p>
+<p>Q8. 怎么确认传感器在线？</p>
+<p>A：读 WHO_AM_I 应为 0x68。</p>
+<h2>自测题（先盖住答案）</h2>
+<p>1. 读寄存器前要发什么？</p>
+<p>答：寄存器地址（写操作）。</p>
+<p>2. 最后一字节回什么？</p>
+<p>答：NACK。</p>
+<p>3. ±2g 时 1g 对应多少读数？</p>
+<p>答：16384。</p>
+<p>4. 死锁时打几个时钟？</p>
+<p>答：9 个。</p>
+<h2>复习清单</h2>
+<p>☐  能手写软件 I2C</p>
+<p>☐  懂硬件事件</p>
+<p>☐  会读 MPU6050</p>
+<p>☐  会恢复死锁</p>
+<p class="back"><a href="index.html">← 返回目录</a></p>
+</body></html>
